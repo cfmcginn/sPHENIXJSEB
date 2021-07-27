@@ -1,0 +1,11 @@
+2021.07.23
+
+We have to get off Chi's spaghetti code there are too many memory issues that i simply do not understand
+
+This is going to be the starting point - since we are writing it in c and not c++ it will also require some learning for you, in particular for char* manips
+
+Good fucking luck man this one is gonna be rough
+
+****
+MakefileFull: Copy of original makefile for when you are ready to reincorporate Windriver stuff, you have a good reference point
+Makefile: Temporary copy for just compiling stuff as you are ready to test
