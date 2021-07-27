@@ -4,10 +4,24 @@
 //Changes are largely rewrites for simplicity and clarity for future users
 
 //c headers
+#define  _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+//Windrvr specific header files
+#include "wdc_defs.h"
+#include "wdc_lib.h"
+#include "samples/shared/diag_lib.h"
+#include "samples/shared/wdc_diag_lib.h"
+#include "include/pci_regs.h"
+
+//JSEB specific headers:
+#include "include/jseb2_lib.h"
+
+/* Error messages display */
+#define JSEB2_ERR printf
 
 //we are declaring a large multidimensional array for all string handling
 const int nStrings = 100;
@@ -162,6 +176,113 @@ void splitPermaStringToParams(int pos)
   return;
 }
 
+//Just find JSEB2 device - copied direct from Chi's code
+static BOOL DeviceFind(DWORD dwVendorId, DWORD dwDeviceId, WD_PCI_SLOT *pSlot)
+{
+  DWORD dwStatus;
+  DWORD i, dwNumDevices;
+  WDC_PCI_SCAN_RESULT scanResult;
+
+  if(dwVendorId == 0){
+    if(DIAG_INPUT_SUCCESS != DIAG_InputDWORD((PVOID)&dwVendorId, "Enter vendor ID", TRUE, 0, 0)){
+      return FALSE;
+    }
+
+    if(DIAG_INPUT_SUCCESS != DIAG_InputDWORD((PVOID)&dwDeviceId, "Enter device ID", TRUE, 0, 0)){
+      return FALSE;
+    }
+  }
+
+  BZERO(scanResult);
+  dwStatus = WDC_PciScanDevices(dwVendorId, dwDeviceId, &scanResult);
+  if(WD_STATUS_SUCCESS != dwStatus){
+    JSEB2_ERR("DeviceFind: Failed scanning the PCI bus.\n"
+	      "Error: 0x%lx - %s\n", dwStatus, Stat2Str(dwStatus));
+    return FALSE;
+  }
+
+  dwNumDevices = scanResult.dwNumDevices;
+  if(!dwNumDevices){
+    JSEB2_ERR("No matching device was found for search criteria "
+	      "(Vendor ID 0x%lX, Device ID 0x%lX)\n",
+	      dwVendorId, dwDeviceId);
+
+    return FALSE;
+  }
+
+  printf("\n");
+  printf("Found %ld matching device%s [ Vendor ID 0x%lX%s, Device ID 0x%lX%s ]:\n",
+	 dwNumDevices, dwNumDevices > 1 ? "s" : "",
+	 dwVendorId, dwVendorId ? "" : " (ALL)",
+	 dwDeviceId, dwDeviceId ? "" : " (ALL)");
+
+  for(int i = 0; i < dwNumDevices; i++){
+    printf("\n");
+    printf("%2ld. Vendor ID: 0x%lX, Device ID: 0x%lX\n",
+	   i + 1,
+	   scanResult.deviceId[i].dwVendorId,
+	   scanResult.deviceId[i].dwDeviceId);
+
+    WDC_DIAG_PciDeviceInfoPrint(&scanResult.deviceSlot[i], FALSE);
+  }
+  printf("\n");
+
+  if(dwNumDevices > 1){
+    sprintf(allStrings[nStrings-1], "Select a device (1 - %ld): ", dwNumDevices);
+    i = 0;
+    if(DIAG_INPUT_SUCCESS != DIAG_InputDWORD((PVOID)&i,
+					     allStrings[nStrings-1], FALSE, 1, dwNumDevices)){
+      return FALSE;
+    }
+  }
+
+  *pSlot = scanResult.deviceSlot[i - 1];
+
+  return TRUE;
+}
+
+static WDC_DEVICE_HANDLE DeviceOpen(const WD_PCI_SLOT *pSlot)
+{
+  WDC_DEVICE_HANDLE hDev;
+  DWORD dwStatus;
+  WD_PCI_CARD_INFO deviceInfo;
+
+  /* Retrieve the device's resources information */
+  BZERO(deviceInfo);
+  deviceInfo.pciSlot = *pSlot;
+  dwStatus = WDC_PciGetDeviceInfo(&deviceInfo);
+  if(WD_STATUS_SUCCESS != dwStatus){
+    JSEB2_ERR("DeviceOpen: Failed retrieving the device's resources information.\n"
+	      "Error 0x%lx - %s\n", dwStatus, Stat2Str(dwStatus));
+    return NULL;
+  }
+
+  /* NOTE: You can modify the device's resources information here, if                                 
+       necessary (mainly the deviceInfo.Card.Items array or the items number -
+       deviceInfo.Card.dwItems) in order to register only some of the resources
+       or register only a portion of a specific address space, for example. */
+  /* Open a handle to the device */
+  hDev = JSEB2_DeviceOpen(&deviceInfo);
+  if(!hDev){
+    JSEB2_ERR("DeviceOpen: Failed opening a handle to the device: %s",
+	      JSEB2_GetLastErr());
+    return NULL;
+  }
+
+  return hDev;
+}
+
+
+//Find and open a JSEB2 device
+static WDC_DEVICE_HANDLE DeviceFindAndOpen(DWORD dwVendorId, DWORD dwDeviceId)
+{
+  WD_PCI_SLOT slot;
+  if(!DeviceFind(dwVendorId, dwDeviceId, &slot)) return NULL;
+
+  return DeviceOpen(&slot);
+}
+
+
 //Main function - Parse config file + run test + write output
 int sphenixADCTest(char* inConfigFileName)
 {
@@ -182,7 +303,7 @@ int sphenixADCTest(char* inConfigFileName)
   
   static char* configLine;
   static size_t configLen;
-  static ssize_t configRead;
+  static size_t configRead;
 
   int paramPos = configFileNamePos+1;
   while((configRead = getline(&configLine, &configLen, configFile)) != -1){
@@ -305,6 +426,8 @@ int sphenixADCTest(char* inConfigFileName)
   //Read full config file, lets create the output file name before continuing
   combinePermaString(nStrings-1, "output/board", boardID);
 
+  if(doDebug) printf("DEBUG FILE, LINE: '%s', L%d\n", __FILE__, __LINE__);
+
   char* tempStr = allStrings[nStrings-1];
   combinePermaString(nStrings-1, tempStr, "_Channel");
   tempStr = allStrings[nStrings-1];
@@ -326,6 +449,8 @@ int sphenixADCTest(char* inConfigFileName)
   char* tempStr2 = allStrings[nStrings-2];
   combinePermaString(nStrings-1, tempStr, tempStr2);  
 
+  if(doDebug) printf("DEBUG FILE, LINE: '%s', L%d\n", __FILE__, __LINE__);
+
   tempStr = allStrings[nStrings-1];
   combinePermaString(nStrings-1, tempStr, "_");
   tempStr = allStrings[nStrings-1];
@@ -333,7 +458,11 @@ int sphenixADCTest(char* inConfigFileName)
   tempStr = allStrings[nStrings-1];
   combinePermaString(nStrings-1, tempStr, ".dat");
 
-  char* outFileName = allStrings[nStrings-1];
+  //Since i use the last position in the array for temporary storage, move to the latest position
+  
+  tempStr = allStrings[nStrings-1];
+  setPermaString(nParams, tempStr);
+  char* outFileName = allStrings[nParams];
   FILE* outFile = fopen(outFileName, "w");
   fprintf(outFile, "%s: %s\n", allParamNames[boardIDPos], allParamVals[boardIDPos]);
   fprintf(outFile, "%s: %s\n", allParamNames[channelMinPos], allParamVals[channelMinPos]);
@@ -347,6 +476,8 @@ int sphenixADCTest(char* inConfigFileName)
   fprintf(outFile, "%s: %s\n", allParamNames[eventsPerStepPos], allParamVals[eventsPerStepPos]);
   fprintf(outFile, "%s: %s\n", allParamNames[dacPerStepPos], allParamVals[dacPerStepPos]);  
 
+  if(doDebug) printf("DEBUG FILE, LINE: '%s', L%d\n", __FILE__, __LINE__);
+
   //Finished writing most of the configuration params to output for metadata purposes
   //Now start doing actually processing
   //Start declarations of variables we will use to talk to the crate
@@ -354,12 +485,23 @@ int sphenixADCTest(char* inConfigFileName)
   //sphenix_adc_test_jseb2.c, case 4 test sequence
 
   //First we need to find and open some PCI devices (JSEB2s)
+  WDC_DEVICE_HANDLE hDev = NULL;
+  DWORD dwStatus;
+  dwStatus = JSEB2_LibInit();
+  if(WD_STATUS_SUCCESS != dwStatus){
+    JSEB2_ERR("pcie_diag: Failed to initialize the JSEB2 library: %s", JSEB2_GetLastErr());
+    return dwStatus;
+  }
+
+  if(JSEB2_DEFAULT_VENDOR_ID) hDev = DeviceFindAndOpen(JSEB2_DEFAULT_VENDOR_ID, JSEB2_DEFAULT_DEVICE_ID);
   
-  
+
+  //Now lets declare variables we will use to talk to the jseb2  
   static DWORD dwAddrSpace;
   static UINT32 u32Data;
   static DWORD dwOffset;
-  
+  static long imod,ichip;
+
   static UINT32 read_array[dma_buffer_size];
   UINT32 buf_send[40000];
   UINT32 *px, *py;
@@ -375,10 +517,9 @@ int sphenixADCTest(char* inConfigFileName)
   dwAddrSpace = 2;
   u32Data = 0xf0000008;
   dwOffset = 0x28;
+  
 
-  
-  
-  
+  if(doDebug) printf("DEBUG FILE, LINE: '%s', L%d\n", __FILE__, __LINE__);
 
   fclose(outFile);
   fclose(configFile);

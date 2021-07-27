@@ -1,3 +1,17 @@
+# Make sure that WD_BASEDIR points to the right place
+ifeq ($(WD_BASEDIR),)
+        WD_BASEDIR=/home/phnxrc/export/software/WinVer1260/WinDriver
+endif
+
+WD_BASEDIR:=$(wildcard $(WD_BASEDIR))
+
+ifeq ($(wildcard $(WD_BASEDIR)/include/windrvr.h),)
+        $(error Please edit the makefile and set the WD_BASEDIR variable \
+        to point to the location of your WinDriver installation directory)
+endif
+
+
+
 # Comment/uncomment to enable/disable debugging code
 DEBUG = 1
 
@@ -39,11 +53,13 @@ endif
 MKDIR_BIN=mkdir -p $(PWD)/bin
 MKDIR_LIB=mkdir -p $(PWD)/lib
 
-CFLAGS += -DLINUX $(DEBFLAGS) -Wall
+CFLAGS += -DLINUX $(DEBFLAGS) -Wall -I$(PWD) -I$(WD_BASEDIR)/include -I$(WD_BASEDIR) 
+CFLAGS += -DWD_DRIVER_NAME_CHANGE
+LFLAGS += -lwdapi1260
 LFLAGS += -lpthread
 
 TARGET = bin/sphenixADCTest
-SRCS = src/sphenixADCTest.c 
+SRCS = src/sphenixADCTest.c src/jseb2_lib.c $(WD_BASEDIR)/samples/shared/diag_lib.c $(WD_BASEDIR)/samples/shared/wdc_diag_lib.c
 
 LD = gcc
 
@@ -63,7 +79,17 @@ $(TARGET) : $(OBJS)
 	$(LD) -o $@ $(OBJS) $(LFLAGS) $(ADDITIONAL_LIBS)
 
 sphenixADCTest.o : src/sphenixADCTest.c
-	$(CC) -c $(CFLAGS) -o $@ $<
+	$(CC) -std=c99 -c $(CFLAGS) -o $@ $<
+
+jseb2_lib.o : src/jseb2_lib.c
+	$(CC) -std=c99 -c $(CFLAGS) -o $@ $<
+
+diag_lib.o : $(WD_BASEDIR)/samples/shared/diag_lib.c
+	$(CC) -std=c99 -c $(CFLAGS) -o $@ $<
+
+wdc_diag_lib.o : $(WD_BASEDIR)/samples/shared/wdc_diag_lib.c
+	$(CC) -std=c99 -c $(CFLAGS) -o $@ $<
+
 
 clean:
 	rm -f *~ 
