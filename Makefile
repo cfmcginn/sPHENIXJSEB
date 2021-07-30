@@ -55,7 +55,7 @@ MKDIR_LIB=mkdir -p $(PWD)/lib
 
 CFLAGS += -DLINUX $(DEBFLAGS) -Wall -I$(PWD) -I$(WD_BASEDIR)/include -I$(WD_BASEDIR) 
 CFLAGS += -DWD_DRIVER_NAME_CHANGE
-LFLAGS += -lwdapi1260
+LFLAGS += -lwdapi1260 -L$(PWD)/lib
 LFLAGS += -lpthread
 
 TARGET = bin/sphenixADCTest
@@ -63,7 +63,7 @@ SRCS = src/sphenixADCTest.c src/jseb2_lib.c $(WD_BASEDIR)/samples/shared/diag_li
 
 LD = gcc
 
-OD = ./
+OD = lib
 OBJS = $(addsuffix .o, $(addprefix $(OD)/, $(basename $(notdir $(SRCS)))))
 
 
@@ -78,16 +78,16 @@ mkdirLib:
 $(TARGET) : $(OBJS)
 	$(LD) -o $@ $(OBJS) $(LFLAGS) $(ADDITIONAL_LIBS)
 
-sphenixADCTest.o : src/sphenixADCTest.c
+lib/sphenixADCTest.o : src/sphenixADCTest.c
 	$(CC) -std=c99 -c $(CFLAGS) -o $@ $<
 
-jseb2_lib.o : src/jseb2_lib.c
+lib/jseb2_lib.o : src/jseb2_lib.c
 	$(CC) -std=c99 -c $(CFLAGS) -o $@ $<
 
-diag_lib.o : $(WD_BASEDIR)/samples/shared/diag_lib.c
+lib/diag_lib.o : $(WD_BASEDIR)/samples/shared/diag_lib.c
 	$(CC) -std=c99 -c $(CFLAGS) -o $@ $<
 
-wdc_diag_lib.o : $(WD_BASEDIR)/samples/shared/wdc_diag_lib.c
+lib/wdc_diag_lib.o : $(WD_BASEDIR)/samples/shared/wdc_diag_lib.c
 	$(CC) -std=c99 -c $(CFLAGS) -o $@ $<
 
 
