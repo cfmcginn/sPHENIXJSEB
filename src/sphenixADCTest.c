@@ -15,7 +15,10 @@
 #include "wdc_lib.h"
 #include "samples/shared/diag_lib.h"
 #include "samples/shared/wdc_diag_lib.h"
-#include "include/pci_regs.h"
+//This path for daq01
+//#include "include/pci_regs.h"
+//this path for jseb2 tower at ucb
+#include "samples/shared/pci_regs.h"
 
 //JSEB specific headers:
 #include "include/jseb2_lib.h"
@@ -226,14 +229,30 @@ static BOOL DeviceFind(DWORD dwVendorId, DWORD dwDeviceId, WD_PCI_SLOT *pSlot)
     WDC_DIAG_PciDeviceInfoPrint(&scanResult.deviceSlot[i], FALSE);
   }
   printf("\n");
+  //  printf("Number i %d\n", i);
 
   if(dwNumDevices > 1){
-    sprintf(allStrings[nStrings-1], "Select a device (1 - %ld): ", dwNumDevices);
+    sprintf(allStrings[nStrings-5], "Select a device (1 - %ld): ", dwNumDevices);
     i = 0;
     if(DIAG_INPUT_SUCCESS != DIAG_InputDWORD((PVOID)&i,
-					     allStrings[nStrings-1], FALSE, 1, dwNumDevices)){
+					     allStrings[nStrings-5], FALSE, 1, dwNumDevices)){
       return FALSE;
     }
+  }
+  else if(dwNumDevices == 1){
+    printf("Auto-selected the only device\n");
+    
+    allStrings[nStrings-5][0] = '1';
+    i = 0;
+    if(DIAG_INPUT_SUCCESS != DIAG_InputDWORD((PVOID)&i,
+					     allStrings[nStrings-5], FALSE, 1, dwNumDevices)){
+      return FALSE;
+    }
+    printf("device open success\n");
+  }
+  else{
+    printf("NO GOOD DEVICES FOUND RETURN FALSE\n");
+    return FALSE;
   }
 
   *pSlot = scanResult.deviceSlot[i - 1];
@@ -277,10 +296,129 @@ static WDC_DEVICE_HANDLE DeviceOpen(const WD_PCI_SLOT *pSlot)
 static WDC_DEVICE_HANDLE DeviceFindAndOpen(DWORD dwVendorId, DWORD dwDeviceId)
 {
   WD_PCI_SLOT slot;
+  printf("Running device find...\n");
   if(!DeviceFind(dwVendorId, dwDeviceId, &slot)) return NULL;
-
+  printf("Running device open...\n");
   return DeviceOpen(&slot);
 }
+
+//Temp declaration of pcie_send
+static int pcie_send(WDC_DEVICE_HANDLE hDev, int mode, int nword, UINT32 *buff_send)
+{
+  /* imode =0 single word transfer, imode =1 DMA */
+#include "wdc_defs.h"
+  static DWORD dwAddrSpace;
+  static DWORD dwDMABufSize;
+
+  static UINT32 *buf_send;
+  static WD_DMA *pDma_send;
+  static DWORD dwStatus;
+  static DWORD dwOptions_send = DMA_TO_DEVICE;
+  static DWORD dwOffset;
+  static UINT32 u32Data;
+  static PVOID pbuf_send;
+  int nwrite,i,j, iprint;
+  static int ifr=0;
+
+  if (ifr == 0) {
+    ifr=1;
+    dwDMABufSize = 140000;
+    dwStatus = WDC_DMAContigBufLock(hDev, &pbuf_send, dwOptions_send, dwDMABufSize, &pDma_send);
+    if (WD_STATUS_SUCCESS != dwStatus) {
+      printf("Failed locking a send Contiguous DMA buffer. Error 0x%lx - %s\n", dwStatus, Stat2Str(dwStatus));
+    }
+    buf_send = pbuf_send;
+  }
+  iprint =0;
+  if(mode ==1 ) {
+    for (i=0; i< nword; i++) {
+      *(buf_send+i) = *buff_send++;
+      /*      printf("%d \n",*(buf_send+i));   */
+    }
+  }
+  if(mode == 0) {
+    nwrite = nword*4;
+    /*setup transmiiter */
+    dwAddrSpace =2;
+    u32Data = 0x20000000;
+    dwOffset = 0x18;
+    WDC_WriteAddr32(hDev, dwAddrSpace, dwOffset, u32Data);
+    dwAddrSpace =2;
+    u32Data = 0x40000000+nwrite;
+    dwOffset = 0x18;
+    WDC_WriteAddr32(hDev, dwAddrSpace, dwOffset, u32Data);
+    for (j=0; j< nword; j++) {
+      dwAddrSpace =0;
+      dwOffset = 0x0;
+      u32Data = *buff_send++;
+      WDC_WriteAddr32(hDev, dwAddrSpace, dwOffset, u32Data);
+    }
+    for (i=0; i<20000; i++) {
+      dwAddrSpace =2;
+      dwOffset = 0xC;
+      WDC_ReadAddr32(hDev, dwAddrSpace, dwOffset, &u32Data);
+      if(iprint ==1) printf(" status reed %d %X \n", i, u32Data);
+      if(((u32Data & 0x80000000) == 0) && iprint == 1) printf(" Data Transfer complete %d \n", i);
+      if((u32Data & 0x80000000) == 0) break;
+    }
+  }
+  if( mode ==1 ){
+    nwrite = nword*4;
+    WDC_DMASyncCpu(pDma_send);
+    /*
+      printf(" nwrite = %d \n", nwrite);
+      printf(" pcie_send hDev = %d\n", hDev);
+      printf(" buf_send = %X\n",*buf_send);
+    */
+    /*setup transmiiter */
+    dwAddrSpace =2;
+    u32Data = 0x20000000;
+    dwOffset = 0x18;
+    WDC_WriteAddr32(hDev, dwAddrSpace, dwOffset, u32Data);
+    dwAddrSpace =2;
+    u32Data = 0x40000000+nwrite;
+    dwOffset = 0x18;
+    WDC_WriteAddr32(hDev, dwAddrSpace, dwOffset, u32Data);
+
+    /* set up sending DMA starting address */
+
+    dwAddrSpace =2;
+    u32Data = 0x20000000;
+    dwOffset = 0x0;
+    u32Data = pDma_send->Page->pPhysicalAddr & 0xffffffff;
+    WDC_WriteAddr32(hDev, dwAddrSpace, dwOffset, u32Data);
+
+    dwAddrSpace =2;
+    u32Data = 0x20000000;
+    dwOffset = 0x4;
+    u32Data = (pDma_send->Page->pPhysicalAddr >> 32) & 0xffffffff;
+    WDC_WriteAddr32(hDev, dwAddrSpace, dwOffset, u32Data);
+
+    /* byte count */
+    dwAddrSpace =2;
+    dwOffset = 0x8;
+    u32Data = nwrite;
+    WDC_WriteAddr32(hDev, dwAddrSpace, dwOffset, u32Data);
+
+    /* write this will start DMA */
+    dwAddrSpace =2;
+    dwOffset = 0xc;
+    u32Data = 0x00100000;
+    WDC_WriteAddr32(hDev, dwAddrSpace, dwOffset, u32Data);
+
+    for (i=0; i<20000; i++) {
+      dwAddrSpace =2;
+      dwOffset = 0xC;
+      WDC_ReadAddr32(hDev, dwAddrSpace, dwOffset, &u32Data);
+      if(iprint ==1) printf(" DMA status reed %d %X \n", i, u32Data);
+      if(((u32Data & 0x80000000) == 0) && iprint == 1) printf(" DMA complete %d \n", i);
+      if((u32Data & 0x80000000) == 0) break;
+    }
+    WDC_DMASyncIo(pDma_send);
+  }
+  return i;
+}
+
 
 //Temp declaration of pcie_send_1
 static int pcie_send_1(WDC_DEVICE_HANDLE hDev, int mode, int nword, UINT32 *buff_send)
@@ -393,6 +531,140 @@ static int pcie_send_1(WDC_DEVICE_HANDLE hDev, int mode, int nword, UINT32 *buff
     WDC_DMASyncIo(pDma_send);
   }
   return i;
+}
+
+//Temp declaration of pcie_rec
+static int pcie_rec(WDC_DEVICE_HANDLE hDev, int mode, int istart, int nword, int ipr_status, UINT32 *buff_rec)
+{
+  /* imode =0 single word transfer, imode =1 DMA */
+#include "wdc_defs.h"
+  static DWORD dwAddrSpace;
+  static DWORD dwDMABufSize;
+
+  static UINT32 *buf_rec;
+  static WD_DMA *pDma_rec;
+  static DWORD dwStatus;
+  static DWORD dwOptions_rec = DMA_FROM_DEVICE;
+  static DWORD dwOffset;
+  static UINT32 u32Data;
+  static UINT64 u64Data;
+  static PVOID pbuf_rec;
+  int nread,i,j, iprint,icomp;
+  static int ifr=0;
+  
+  if (ifr == 0) {
+    ifr=1;
+    dwDMABufSize = 140000;
+    dwStatus = WDC_DMAContigBufLock(hDev, &pbuf_rec, dwOptions_rec, dwDMABufSize, &pDma_rec);
+    if (WD_STATUS_SUCCESS != dwStatus) {
+      printf("Failed locking a send Contiguous DMA buffer. Error 0x%lx - %s\n", dwStatus, Stat2Str(dwStatus));
+    }
+    buf_rec = pbuf_rec;
+  }
+  iprint =0;
+  if((istart == 1) | (istart == 3)) {
+    dwAddrSpace =2;
+    u32Data = 0xf0000008;
+    dwOffset = 0x28;
+    WDC_WriteAddr32(hDev, dwAddrSpace, dwOffset, u32Data);
+
+    /*initialize the receiver */
+    dwAddrSpace =2;
+    u32Data = 0x20000000;
+    dwOffset = 0x1c;
+    WDC_WriteAddr32(hDev, dwAddrSpace, dwOffset, u32Data);
+    /* write byte count **/
+    dwAddrSpace =2;
+    u32Data = 0x40000000+nword*4;
+    dwOffset = 0x1c;
+    WDC_WriteAddr32(hDev, dwAddrSpace, dwOffset, u32Data);
+    if(ipr_status ==1) {
+      dwAddrSpace =2;
+      u64Data =0;
+      dwOffset = 0x18;
+      WDC_ReadAddr64(hDev, dwAddrSpace, dwOffset, &u64Data);
+      printf (" status word before read = %x, %x \n",(u64Data>>32), (u64Data &0xffff));
+    }
+
+    return 0;
+  }
+  if ((istart == 2) | (istart == 3)) {
+    if(mode == 0) {
+      nread = nword/2+1;
+      if(nword%2 == 0) nread = nword/2;
+      for (j=0; j< nread; j++) {
+	dwAddrSpace =0;
+	dwOffset = 0x0;
+	u64Data =0xbad;
+	WDC_ReadAddr64(hDev,dwAddrSpace, dwOffset, &u64Data);
+	//       printf("u64Data = %16X\n",u64Data);
+	*buff_rec++ = (u64Data &0xffffffff);
+	*buff_rec++ = u64Data >>32;
+	//       printf("%x \n",(u64Data &0xffffffff));
+	//       printf("%x \n",(u64Data >>32 ));
+	//       if(j*2+1 > nword) *buff_rec++ = (u64Data)>>32;
+	//       *buff_rec++ = 0x0;
+      }
+      if(ipr_status ==1) {
+	dwAddrSpace =2;
+	u64Data =0;
+	dwOffset = 0x18;
+	WDC_ReadAddr64(hDev, dwAddrSpace, dwOffset, &u64Data);
+	printf (" status word after read = %x, %x \n",(u64Data>>32), (u64Data &0xffff));
+      }
+      return 0;
+    }
+    if( mode ==1 ){
+      nread = nword*4;
+      WDC_DMASyncCpu(pDma_rec);
+
+      dwAddrSpace =2;
+      u32Data = 0x20000000;
+      dwOffset = 0x0;
+      u32Data = pDma_rec->Page->pPhysicalAddr & 0xffffffff;
+      WDC_WriteAddr32(hDev, dwAddrSpace, dwOffset, u32Data);
+
+      dwAddrSpace =2;
+      u32Data = 0x20000000;
+      dwOffset = 0x4;
+      u32Data = (pDma_rec->Page->pPhysicalAddr >> 32) & 0xffffffff;
+      WDC_WriteAddr32(hDev, dwAddrSpace, dwOffset, u32Data);
+
+      /* byte count */
+      dwAddrSpace =2;
+      dwOffset = 0x8;
+      u32Data = nread;
+      WDC_WriteAddr32(hDev, dwAddrSpace, dwOffset, u32Data);
+
+      /* write this will start DMA */
+      dwAddrSpace =2;
+      dwOffset = 0xc;
+      u32Data = 0x00100040;
+      WDC_WriteAddr32(hDev, dwAddrSpace, dwOffset, u32Data);
+      icomp=0;
+      for (i=0; i<20000; i++) {
+        dwAddrSpace =2;
+        dwOffset = 0xC;
+        WDC_ReadAddr32(hDev, dwAddrSpace, dwOffset, &u32Data);
+        if(iprint ==1) printf(" DMA status read %d %X \n", i, u32Data);
+        if(((u32Data & 0x80000000) == 0)) {
+          icomp=1;
+          if(iprint == 1) printf(" DMA complete %d \n", i);
+        }
+        if((u32Data & 0x80000000) == 0) break;
+      }
+      if(icomp == 0) {
+        printf("DMA timeout\n");
+        return 1;
+      }
+      WDC_DMASyncIo(pDma_rec);
+      for (i=0; i< nword; i++) {
+        *buff_rec++ = *(buf_rec+i);
+	/*      printf("%d \n",*(buf_send+i));   */
+      }
+    }
+  }
+  return 0;
 }
 
 //Temp declaration of pcie_rec_2
@@ -983,6 +1255,7 @@ static int adc_testram_load(WDC_DEVICE_HANDLE hDev, int imod, int idelay)
 
 #define  sp_adc_sel_linux_rxoff     8
 
+
 #define  sp_adc_u_adc_align        10
 #define  sp_adc_l_adc_align        11
 #define  sp_adc_pll_reset          12
@@ -1056,13 +1329,387 @@ static int adc_testram_load(WDC_DEVICE_HANDLE hDev, int imod, int idelay)
  return i;
 }
 
+//Temp addition of full dcm2_fpga_boot function from Chi's code
+static int dcm2_fpga_boot(WDC_DEVICE_HANDLE hDev, int imod, int fpga_t)
+{
+#include "wdc_defs.h"
+#define poweroff      0x0
+#define poweron       0x1
+#define configure_s30 0x2
+#define configure_s60 0x3
+#define configure_cont 0x20
+#define rdstatus      0x80
+#define loopback        0x04
 
+  static DWORD dwAddrSpace;
+
+  static UINT32 u32Data;
+  static unsigned short u16Data;
+  static unsigned long long u64Data;
+  static DWORD dwOffset;
+  static long ichip;
+  unsigned short *buffp;
+
+  static UINT32 i,j,k,ifr,nread,iwrite,ik,istop,newcmd,ifr_readback;
+  static UINT32 send_array[4000],read_array[4000];
+  DWORD dwDMABufSize;
+  PVOID pbuf;
+  WD_DMA *pDma;
+  DWORD dwStatus;
+  DWORD dwOptions = DMA_FROM_DEVICE;
+  UINT32 iread,icheck;
+  UINT32 buf_send[2000];
+  static int   count,num,counta,nword,ireadback,nloop;
+  static int   ij,nsend,iloop,inew,idma_readback;
+  unsigned char    charchannel;
+  unsigned char    carray[4000];
+  UINT32 *px,*py;
+
+  FILE *inpf;
+
+  int iprint = 0;
+
+  ifr_readback=0;
+  ifr=0;
+  iwrite =0;
+
+  icheck =0;
+  istop=0;
+  ireadback =1;
+  idma_readback=1;
+  nsend = 1000;
+
+  px = &buf_send;
+  py = &read_array;
+  ichip=6;
+
+  /** initialize **/
+
+  buf_send[0]=0x0;
+  buf_send[1]=0x0;
+  i=1;
+  k=1;
+  i = pcie_send(hDev, i, k, px);
+  /** test command 1 ***/
+  if (ifr == 0) {
+    ifr=1;
+    buf_send[0]=(imod <<11)+ (ichip << 8) + poweron;
+    buf_send[1]=0x1111;
+    i= 1;
+    k= 2;
+    /** try to cover  1.5*100ms */
+    i = pcie_send(hDev, i, k, px);
+    for (k=0; k<150000000; k++) {
+      ik=k+1;
+      i=ik*ik;
+    }
+  }
+  iloop=1;
+  ik=configure_s60;
+  if(fpga_t == 2) {
+    iloop=4;
+    ik=configure_s30;
+  }
+  buf_send[0]=(imod <<11)+ (ichip << 8) + ik;
+  buf_send[1]=0x5555aaaa;
+  i= 1;
+  k= 2;
+  i = pcie_send(hDev, i, k, px);
+  /** wait for at least 100us **/
+  usleep(100);
+  
+  for (k=0; k<1000000; k++) {
+    ik=k+1;
+    i=ik*ik;
+  }
+
+  if(ireadback == 1) {
+    buf_send[0]=(imod <<11)+ (ichip << 8) + loopback;
+    i= 1;
+    k= 1;
+    i = pcie_send(hDev, i, k, px);
+  }
+
+  for (j=0; j<iloop; j++) {
+    if(fpga_t == 2)
+      //         inpf = fopen("/home/chi/dcm2_compress.rbf","r");
+      inpf = fopen("/home/phnxrc/cfmcginn/dcm2_compress_adctest.rbf","r");
+    //CFM 2021.05.10: previously was /home/chi/dcm2_780_boot_adctest                             
+    else
+      inpf = fopen("/home/phnxrc/cfmcginn/eventmerge_v3.rbf","r");
+    //CFM 2021.05.10: previously was /home/chi/dcm2_1152_boot_adctest                            
+
+    /* read data as characters (28941) */
+
+    if(iprint == 1) printf("LINE, j: %d, %d (fpga_t=%d)\n", __LINE__, j, fpga_t);
+    count = 0;
+    counta= 0;
+    while (fread(&charchannel,sizeof(char),1,inpf)==1) {
+
+      carray[count] = charchannel;
+      count++;
+      counta++;
+      if((count%(nsend*2)) == 0){
+
+	buf_send[0] = (imod <<11) + (ichip << 8) + configure_cont + (carray[0]<<16);
+	send_array[0] =buf_send[0];
+	/*           printf(" counta = %d, first word = %x, %x, %x \n",counta,buf_send[0], carray[0], carray[1]);  */
+	for (ij=0; ij< nsend; ij++) {
+	  buf_send[ij+1] = carray[2*ij+1]+ (carray[2*ij+2]<<16);
+	  send_array[ij+1] = buf_send[ij+1];
+	}
+	nword =nsend+1;
+
+	if(ireadback == 1) {
+	  if(idma_readback == 1) {
+	    i=pcie_rec(hDev,1,1,nword,0,py);
+	  }
+	  else{
+	    if(ifr_readback ==0) {
+	      //              WDC_WriteAddr32(hDev, dwAddrSpace, dwOffset, u32Data);
+	      dwAddrSpace =2;
+	      u32Data = 0x20000000;
+	      dwOffset = 0x1c;
+	      WDC_WriteAddr32(hDev, dwAddrSpace, dwOffset, u32Data);
+	      if(iprint == 1) printf(" receiver inited \n");
+	    }
+	    ifr_readback =1;
+	    dwAddrSpace =2;
+	    u32Data = 0x40000000+nword*4;
+	    dwOffset = 0x1c;
+	    WDC_WriteAddr32(hDev, dwAddrSpace, dwOffset, u32Data);
+	    dwAddrSpace =2;
+	    u64Data =0;
+	    dwOffset = 0x18;
+	    WDC_ReadAddr64(hDev, dwAddrSpace, dwOffset, &u64Data);
+	    if(iprint==1) printf (" status word before send = %llX \n",u64Data);
+	  }
+	}
+
+	i =1;
+	i = pcie_send(hDev, i, nword, px);
+	//  50ns per byt, 2000 bytes*50ns*2 = 200 microsec
+	if(ireadback != 1){
+	  for (k=0; k<200000; k++) {    /* 100000 for 100 microsec */
+	    ik=k+1;
+	    i=ik*ik;
+	  }
+	}
+
+	if(ireadback == 1) {
+	  if(idma_readback == 1) {
+	    i=pcie_rec(hDev,1,2,nword,0,py); /** set up readback  **/ //CFM EDIT 2021.05.10: 5th position from 0 to 1 for additional printouts
+	    //              printf("END IDMA READBACK: L%d\n", __LINE__);
+	  }
+	  else {
+	    dwAddrSpace =2;
+	    u64Data =0;
+	    dwOffset = 0x18;
+	    WDC_ReadAddr64(hDev, dwAddrSpace, dwOffset, &u64Data);
+	    if(iprint == 1) printf (" status word before read = %llX \n",u64Data);
+	    k = nword%2;
+	    ik= nword/2+1;
+	    if(k == 0) ik = nword/2;
+	    for (i=0; i<ik; i++) {
+	      dwAddrSpace =0;
+	      u64Data =0;
+	      dwOffset = 0x0;
+	      WDC_ReadAddr64(hDev, dwAddrSpace, dwOffset, &u64Data);
+	      read_array[i*2] = u64Data;
+	      read_array[i*2+1] = u64Data>>32;
+	    }
+	    dwAddrSpace =2;
+	    u64Data =0;
+	    dwOffset = 0x18;
+	    WDC_ReadAddr64(hDev, dwAddrSpace, dwOffset, &u64Data);
+            if(iprint ==1 )printf (" status word after read = %llX \n",u64Data);
+	  }
+	  for (i=0; i< nword; i++) {
+	    if(iprint ==1 ) {
+	      if(i%8 == 0) printf("%d", i);
+	      printf("%9X",read_array[i]);
+	      if(((i+1)%8) ==0) printf("\n");
+	    }
+	    if(read_array[i] != send_array[i]) {
+	      //CFM EDIT: 2021.05.10, commented out below line                                   
+	      //printf("\n counta=%d, i=%d, send =%9X read= %9X \n",counta,i,send_array[i],read_array[i]);                                                                                          
+	  }
+	}
+	if(iprint == 1) {
+	  if(nword%8 !=0) printf("\n");
+	}
+      }
+      /*           }  */
+      count=0;
+    }
+  }
+
+  if(iprint) printf("LINE: %d\n", __LINE__);
+
+  if (feof(inpf)) {
+    printf("You have reached the end-of-file word count= %d %d\n", counta, count);
+    buf_send[0] = (imod <<11) + (ichip << 8) + configure_cont + (carray[0]<<16);
+    if ( count > 1) {
+      if( ((count-1)%2) ==0) {
+	ik =(count-1)/2;
+      }
+      else {
+	ik =(count-1)/2+1;
+      }
+      printf("ik= %d\n",ik);
+      for (ij=0; ij<ik;ij++){
+	buf_send[ij+1] = carray[2*ij+1]+(carray[2*ij+2]<<16);
+	send_array[ij+1] = buf_send[ij+1];
+      }
+    }
+    else ik=1;
+    
+    if(j == iloop-1)
+      nword =ik+5;
+    else
+      nword =ik+1;
+    if(ireadback == 1) {
+      //              WDC_WriteAddr32(hDev, dwAddrSpace, dwOffset, u32Data);
+      if(idma_readback == 1) {
+	//              printf("BEGIN IDMA READBACK: L%d\n", __LINE__);
+	i=pcie_rec(hDev,1,1,nword,0,py); /** set up readback  **/ //CFM EDIT 2021.05.10: 5th position from 0 to 1 for additional printouts
+	//              printf("END IDMA READBACK: L%d\n", __LINE__);
+      }
+      else {
+	dwAddrSpace =2;
+	u32Data = 0x20000000;
+	dwOffset = 0x1c;
+	WDC_WriteAddr32(hDev, dwAddrSpace, dwOffset, u32Data);
+	dwAddrSpace =2;
+	u32Data = 0x40000000+nword*4;
+	dwOffset = 0x1c;
+	WDC_WriteAddr32(hDev, dwAddrSpace, dwOffset, u32Data);
+	dwAddrSpace =2;
+	u64Data =0;
+	dwOffset = 0x18;
+	WDC_ReadAddr64(hDev, dwAddrSpace, dwOffset, &u64Data);
+	if(iprint==1) printf (" status word before send = %llX \n",u64Data);
+      }
+    }
+    if(iprint == 1) printf("LINE: %d\n", __LINE__);
+    
+    i=1;
+    i = pcie_send(hDev, i, nword, px);
+    //  50ns per byt, 2000 bytes*50ns*2 = 200 microsec
+    //           if(ireadback != 1){
+    for (k=0; k<200000; k++) {    /* 100000 for 100 microsec */
+      ik=k+1;
+      i=ik*ik;
+    }
+    //           }
+    if(ireadback == 1) {
+      if(idma_readback == 1) {
+	//      printf("BEGIN IDMA READBACK: L%d\n", __LINE__);
+	i=pcie_rec(hDev,1,2,nword,0,py); /** set up readback  **/ //CFM EDIT 2021.05.10: 5th position from 0 to 1 for additional printouts
+	//      printf("END IDMA READBACK: L%d\n", __LINE__);
+      }
+      else {
+	dwAddrSpace =2;
+	u64Data =0;
+	dwOffset = 0x18;
+	WDC_ReadAddr64(hDev, dwAddrSpace, dwOffset, &u64Data);
+	if(iprint == 1) printf (" status word before read = %llX \n",u64Data);
+	k = nword%2;
+	ik= nword/2+1;
+	if(k == 0) ik = nword/2;
+	for (i=0; i<ik; i++) {
+	  dwAddrSpace =0;
+	  u64Data =0;
+	  dwOffset = 0x0;
+	  WDC_ReadAddr64(hDev, dwAddrSpace, dwOffset, &u64Data);
+	  read_array[i*2] = u64Data;
+	  read_array[i*2+1] = u64Data>>32;
+	}
+	if(iprint ==1 )printf (" status word after read = %llX \n",u64Data);
+      }
+      for (i=0; i< nword; i++) {
+	if(iprint ==1 ) {
+	  if(i%8 == 0) printf("%d", i);
+	  printf("%9X",read_array[i]);
+	  if(((i+1)%8) ==0) printf("\n");
+	}
+	if(read_array[i] != send_array[i]) {
+	  printf("\n counta=%d, i=%d, send =%9X read= %9X \n",counta,i,send_array[i],read_array[i]);
+	}
+      }
+    }
+    fclose(inpf);
+    //           printf ("enter something to continue\n");
+    //           scanf("%d",&k);
+  }
+  }
+  //   turn off readback
+  if(iprint == 1) printf("LINE: %d\n", __LINE__);
+  if(ireadback == 1) {
+    buf_send[0]=(imod <<11)+ ((ichip+1) << 8) + loopback;
+    i= 1;
+    k= 1;
+    i = pcie_send(hDev, i, k, px);
+  }
+  if(iprint == 1) printf("LINE: %d\n", __LINE__);
+  
+  /*** reack back status ***/
+
+
+  WDC_WriteAddr32(hDev, dwAddrSpace, dwOffset, u32Data);
+  dwAddrSpace =2;
+  u32Data = 0x20000000;
+  dwOffset = 0x1c;
+  WDC_WriteAddr32(hDev, dwAddrSpace, dwOffset, u32Data);
+  if(iprint == 1) printf(" receiver inited \n");
+  dwAddrSpace =2;
+  u32Data = 0x40000000+4;
+  dwOffset = 0x1c;
+  WDC_WriteAddr32(hDev, dwAddrSpace, dwOffset, u32Data);
+  dwAddrSpace =2;
+  u64Data =0;
+  dwOffset = 0x18;
+  WDC_ReadAddr64(hDev, dwAddrSpace, dwOffset, &u64Data);
+  printf (" status word in the status read = %llX \n",u64Data);
+
+  buf_send[0]=(imod <<11)+ (ichip << 8) + rdstatus;  /* turn on status read*/
+  buf_send[1]=0x5555aaaa;
+  i= 1;
+  k= 1;
+  i = pcie_send(hDev, i, k, px);
+  for (k=0; k<10000; k++) {    /* 100000 for 100 microsec */
+    ik=k+1;
+    i=ik*ik;
+  }
+
+  if(iprint == 1) printf("LINE: %d\n", __LINE__);
+
+  dwAddrSpace =2;
+  u64Data =0;
+  dwOffset = 0x18;
+  WDC_ReadAddr64(hDev, dwAddrSpace, dwOffset, &u64Data);
+  printf (" status word in the status read = %llX \n",u64Data);
+
+  dwAddrSpace =0;
+  u64Data =0;
+  dwOffset = 0x0;
+  WDC_ReadAddr64(hDev, dwAddrSpace, dwOffset, &u64Data);
+  u32Data = u64Data;
+  if(fpga_t ==1)
+    printf(" status word from FPGA 5 = %11X \n", u32Data);
+  else
+    printf(" status word from FPGA 1-4 = %11X \n", u32Data);
+  return i;
+}
 
 
 //Main function - Parse config file + run test + write output
 int sphenixADCTest(char* inConfigFileName)
 {
   //Start out defining some numbers
+#define dcm2_run_off  254
+#define dcm2_run_on   255
+
 #define  dma_buffer_size        10000000  
 
 #define  sp_cntrl_offline           3
@@ -1091,6 +1738,24 @@ int sphenixADCTest(char* inConfigFileName)
 
 #define  sp_adc_readback_sub        4
 #define  sp_adc_readback_status     3
+
+#define  sp_adc_sel_link_rxoff     8
+
+#define  sp_xmit_sub                1
+#define  sp_xmit_rxanalogreset      2
+#define  sp_xmit_rxdigitalreset     3
+
+#define  sp_xmit_rxbytord          15
+#define  sp_xmit_init               4
+
+#define dcm2_online   2
+#define dcm2_setmask  3
+#define dcm2_run_off  254
+#define dcm2_run_on   255
+#define dcm2_5_firstdcm 8
+#define dcm2_5_lastdcm  9
+
+#define dcm2_5_readdata 4
 
 
   //Start working w/ the config file
@@ -1122,7 +1787,7 @@ int sphenixADCTest(char* inConfigFileName)
   }
 
   //Setting the configfilename param manually
-  setParamArrName(0, "INCONFIGFILENAME");
+  setParamArrName(0, "CONFIGFILENAME");
   setParamArrVal(0, inConfigFileName);
 
   const int nParams = paramPos;//All params w/ a +1 for the input config file name
@@ -1158,7 +1823,6 @@ int sphenixADCTest(char* inConfigFileName)
   //We need to search for params now and fill out corresponding booleans etc.
   for(int pI = 0; pI < nParams; ++pI){
     //    printf("'%s', '%s'\n", allParamNames[pI], allParamVals[pI]);
-
     if(strcmp(allParamNames[pI], "BOARDID") == 0) boardIDPos = pI;
     else if(strcmp(allParamNames[pI], "CHANNELMIN") == 0) channelMinPos = pI;
     else if(strcmp(allParamNames[pI], "CHANNELMAX") == 0) channelMaxPos = pI;
@@ -1194,7 +1858,7 @@ int sphenixADCTest(char* inConfigFileName)
   if(doDebug) printf("DEBUG FILE, LINE: '%s', L%d\n", __FILE__, __LINE__);
 
   const int numberOfLoop = atoi(allParamVals[numberOfLoopPos]);
-  const int numberOfEvent = atoi(allParamVals[numberOfEventPos]);
+  const int numberOfEventIn = atoi(allParamVals[numberOfEventPos]);
   const int positionOfModule = atoi(allParamVals[positionOfModulePos]);
   const int numberFEM = atoi(allParamVals[numberFEMPos]);
 
@@ -1214,6 +1878,20 @@ int sphenixADCTest(char* inConfigFileName)
 
   const int loadADCMem = atoi(allParamVals[loadADCMemPos]);
   const int trigXMITReset = atoi(allParamVals[trigXMITResetPos]);
+  const int ipattern = (int) strtol(allParamVals[signalPos], NULL, 16);
+
+  int numberOfEvent = numberOfEventIn;
+  if(usePulseGen){
+    numberOfEvent = numberOfSteps * eventsPerStep;
+    printf("Using pulse generator, number of events \'%d\' is overriden to now be nStep*eventPerStep, %dx%d, or %d\n", numberOfEventIn, numberOfSteps, eventsPerStep, numberOfEvent);
+  }
+
+  //Go ahead and make it so that this won't run if useXMIT and useDCM dont match
+  //Both should be true if doing ADC
+  if(useXMIT != useDCM){
+    printf("useXMIT value \'%d\' does not match useDCM value \'%d\'. return 1\n", useXMIT, useDCM);
+    return 1;
+  }
 
   //Now do the strings
   char* boardID = allParamVals[boardIDPos];
@@ -1262,23 +1940,35 @@ int sphenixADCTest(char* inConfigFileName)
   tempStr = allStrings[nStrings-1];
   combinePermaString(nStrings-1, tempStr, ".dat");
 
-  //Since i use the last position in the array for temporary storage, move to the latest position
-  
+  //Since i use the last position in the array for temporary storage, move to the latest position 
+  if(doDebug) printf("DEBUG FILE, LINE: '%s', L%d\n", __FILE__, __LINE__);
+ 
   tempStr = allStrings[nStrings-1];
   setPermaString(nParams, tempStr);
+
+  if(doDebug) printf("DEBUG FILE, LINE: '%s', L%d\n", __FILE__, __LINE__);
+
   char* outFileName = allStrings[nParams];
   FILE* outFile = fopen(outFileName, "w");
+  if(doDebug) printf("DEBUG FILE, LINE: '%s', L%d, %s\n", __FILE__, __LINE__, outFileName);
   fprintf(outFile, "%s: %s\n", allParamNames[boardIDPos], allParamVals[boardIDPos]);
+  if(doDebug) printf("DEBUG FILE, LINE: '%s', L%d\n", __FILE__, __LINE__);
   fprintf(outFile, "%s: %s\n", allParamNames[channelMinPos], allParamVals[channelMinPos]);
+  if(doDebug) printf("DEBUG FILE, LINE: '%s', L%d\n", __FILE__, __LINE__);
   fprintf(outFile, "%s: %s\n", allParamNames[channelMaxPos], allParamVals[channelMaxPos]);
+  if(doDebug) printf("DEBUG FILE, LINE: '%s', L%d\n", __FILE__, __LINE__);
   fprintf(outFile, "%s: %s\n", allParamNames[additionalTagPos], allParamVals[additionalTagPos]);
+  if(doDebug) printf("DEBUG FILE, LINE: '%s', L%d\n", __FILE__, __LINE__);
   //This one is special for the configFileName
   fprintf(outFile, "%s: %s\n", allParamNames[0], allParamVals[0]);
   //DATE is also special
+  if(doDebug) printf("DEBUG FILE, LINE: '%s', L%d\n", __FILE__, __LINE__);
   fprintf(outFile, "DATE: %s\n", allStrings[nStrings-2]);
   fprintf(outFile, "%s: %s\n", allParamNames[numberOfStepsPos], allParamVals[numberOfStepsPos]);
   fprintf(outFile, "%s: %s\n", allParamNames[eventsPerStepPos], allParamVals[eventsPerStepPos]);
   fprintf(outFile, "%s: %s\n", allParamNames[dacPerStepPos], allParamVals[dacPerStepPos]);  
+  const int nsample = 28; 
+ fprintf(outFile, "NSAMPLES: %\d\n", nsample);  
 
   if(doDebug) printf("DEBUG FILE, LINE: '%s', L%d\n", __FILE__, __LINE__);
 
@@ -1298,40 +1988,75 @@ int sphenixADCTest(char* inConfigFileName)
     return dwStatus;
   }
 
-  printf("Select first device (ADC crate controller JSEB): ");
+  printf("Select first device (ADC crate controller JSEB): \n");
   if(JSEB2_DEFAULT_VENDOR_ID) hDev = DeviceFindAndOpen(JSEB2_DEFAULT_VENDOR_ID, JSEB2_DEFAULT_DEVICE_ID);
+  printf("Will the same JSEB2 control DCM2?");
+  int answer1 = -1;
+  while(answer1 < 0){
+    scanf("%d", &answer1);
+    
+    if(answer1 != 1 && answer1 != 0){
+      printf(" Please answer1 1/0\n");
+      answer1 = -1;
+    }
+  }
 
-  /*
-  printf("Select first device (DCM2 crate controller JSEB): ");
-  if(JSEB2_DEFAULT_VENDOR_ID) hDev2 = DeviceFindAndOpen(JSEB2_DEFAULT_VENDOR_ID, JSEB2_DEFAULT_DEVICE_ID);
-  */
+  if(doDebug) printf("DEBUG FILE, LINE: '%s', L%d\n", __FILE__, __LINE__);
+
+  if(answer1 == 1){
+    hDev2 = hDev;
+  }
+  else{
+    printf("Select second device (DCM2 crate controller JSEB): \n");
+    if(JSEB2_DEFAULT_VENDOR_ID) hDev2 = DeviceFindAndOpen(JSEB2_DEFAULT_VENDOR_ID, JSEB2_DEFAULT_DEVICE_ID);
+  }
+
+  if(doDebug) printf("DEBUG FILE, LINE: '%s', L%d\n", __FILE__, __LINE__);
+
 
   //Now lets declare variables we will use to talk to the jseb2  
   static DWORD dwAddrSpace;
-  static UINT32 u32Data;
+  static UINT32 u32Data, ioffset, nmask, kword;
   static DWORD dwOffset;
-  static long imod,ichip;
+  static long imod,ichip; 
 
-  static UINT32 read_array[dma_buffer_size];
+  static UINT32 read_array[dma_buffer_size], read_array1[40000];
   UINT32 buf_send[40000];
   UINT32 *px, *py;
   static int imod_xmit;
+
+  UINT32 iread;
   
   static UINT32 i,j,k,ifr,nread;
 
   //Temp hard coded
-  const int nsample = 28;
-
-  static int idac_shaper, idac_shaper_load, ic, ipattern, nword, ik, iparity;
-  
+  static int idac_shaper, idac_shaper_load, ic, nword, ik, iparity, imod_dcm, iadd, ioffset_t;  
   static int adc_data[64][40];
+
+  if(doDebug) printf("DEBUG FILE, LINE: '%s', L%d\n", __FILE__, __LINE__);
 
   px = &buf_send;
   py = &read_array;
   imod_xmit = positionOfModule + numberFEM;
   ichip = 6;
 
-  //Skipping some dcm2 necessary lines here - lets just get injector testing up
+  //L3215 in chiupdated code
+  if(useDCM == 1){
+    imod_dcm=11;
+    printf(" boot 5th FPGA \n");
+    i=dcm2_fpga_boot(hDev2,imod_dcm,1);
+    printf(" boot FPGA 1-4 \n");
+    i=dcm2_fpga_boot(hDev2,imod_dcm,2);
+    printf(" DCM II booting done \n");
+    scanf("%d",&i);
+
+    ioffset=4;
+    ichip =5;
+    iadd=(imod_dcm<<11)+(ichip<<8);  /* don't care about chip number **/
+    /* set run =0 -- clear everything */
+    buf_send[0]=iadd+dcm2_run_off;
+    ik=pcie_send(hDev2,1,1,px);
+  }
 
   dwAddrSpace = 2;
   u32Data = 0xf0000008;
@@ -1353,7 +2078,33 @@ int sphenixADCTest(char* inConfigFileName)
   k=1;
   i = pcie_send_1(hDev, i, k, px);
 
-  //xmit selection lines skipped
+  //xmit selection specific lines L3256
+  if(useXMIT){
+    ichip = sp_xmit_sub;
+
+    buf_send[0]=(imod_xmit << 11)+ (ichip << 8) + sp_xmit_rxanalogreset + (0<<16) ;
+    i= 1;
+    k= 1;
+    i = pcie_send_1(hDev, i, k, px);
+    usleep(100);
+    buf_send[0]=(imod_xmit <<11)+ (ichip << 8) + sp_xmit_rxdigitalreset + (0<<16) ;
+    i= 1;
+    k= 1;
+    i = pcie_send_1(hDev, i, k, px);
+    usleep(100);  
+
+    buf_send[0]=(imod_xmit <<11)+ (ichip << 8) + sp_xmit_rxbytord + (0<<16) ;
+    i= 1;
+    k= 1;
+    i = pcie_send_1(hDev, i, k, px);
+    usleep(100);
+    //      }
+    buf_send[0]=(imod_xmit <<11)+ (ichip << 8) + sp_xmit_init + (0<<16) ;
+    i= 1;
+    k= 1;
+    i = pcie_send_1(hDev, i, k, px);
+    usleep(100);
+  }
 
   //Some more lines for sending init to controller
   buf_send[0]= (0x2<<8) + sp_cntrl_timing + (sp_cntrl_init<<16);
@@ -1374,11 +2125,47 @@ int sphenixADCTest(char* inConfigFileName)
   usleep(1000);
 
   //Skipping an isel_dcm section again
+  if(useDCM == 1){
+    nmask = 0x1; /*turn non all channel */
+    for (i=1; i<5; i++) {
+      ichip=i;
+      iadd=(imod_dcm<<11)+(ichip<<8);
+      /* set module to online mode */
+      buf_send[0]=iadd+dcm2_online+(0x1<<16);
+      ik=pcie_send(hDev2,1,1,px);
+      /* set mask on for all channel*/
+      buf_send[0]=iadd+dcm2_setmask+((nmask &0xff) <<16);
+      ik=pcie_send(hDev2,1,1,px);
+    }
+    /** work on 5th FPGA **/
+    ichip=5;
+    iadd=(imod_dcm<<11)+(ichip<<8);
+    /* set module to offline mode */
+    buf_send[0]=iadd+dcm2_online+(0x0<<16);
+    ik=pcie_send(hDev2,1,1,px);
+    /* set mask on for all channel*/
+    buf_send[0]=iadd+dcm2_setmask+((nmask &0xff) <<16);
+    ik=pcie_send(hDev2,1,1,px);
+
+    /* set dcm first module */
+    buf_send[0]=iadd+dcm2_5_firstdcm+(0x1<<16);   // bit 0 =1 on                                      
+    ik=pcie_send(hDev2,1,1,px);
+    /* set last module*/
+    buf_send[0]=iadd+dcm2_5_lastdcm+(0x1<<16);    // bit 0 =1 on                                      
+    ik=pcie_send(hDev2,1,1,px);
+    //                                                                                                      
+    //                                                                                                      
+    ichip =5;
+    iadd=(imod_dcm<<11)+(ichip<<8);
+    /* set run =1 */
+    buf_send[0]=iadd+dcm2_run_on;
+    ik=pcie_send(hDev,1,1,px);
+  }
 
   //For loop starts at L3380
   for(ik = 0; ik < numberFEM; ik++){//numberFEM is the equiv of nmod
     if(usePulseGen){
-      imod = ik + positionOfModule; //positionOfModule is equiv. of imod_start
+      imod = ik + positionOfModule; //positionOfModule is equiv. of positionOfModule
       ichip = sp_adc_slowcntl_sub;
       buf_send[0] = (imod<<11) + (ichip << 8) + sp_adc_trg_tx_areset + (0<<16);
       i = 1;
@@ -1488,7 +2275,19 @@ int sphenixADCTest(char* inConfigFileName)
     i = pcie_send_1(hDev, i, k, px);
     usleep(10);
 
-    //Skipping another section XMIT  L4108-L4119
+    //Another section for XMIT  L4108-L4119
+    if(useXMIT == 1) {
+      if(imod != positionOfModule) {
+        ichip = sp_adc_slowcntl_sub;
+        buf_send[0]=(imod <<11)+ (ichip << 8) + sp_adc_sel_link_rxoff + (0<<16) ;
+        i= 1;
+        k= 1;
+	//Note the call of pcie_send_1 here instead of pcie_send, hence passing hdev 
+      i = pcie_send_1(hDev, i, k, px);
+        usleep(10);
+        printf(" rx_off called , module %d\n", imod);
+      }
+    }
     
     //now start calling adc setup
     i = adc_setup(hDev,imod);
@@ -1500,7 +2299,16 @@ int sphenixADCTest(char* inConfigFileName)
 
   //Out of initial setup loop
   //Skipping the post setup xmit stuff again,  here L4153
-
+  if(useXMIT == 1) {
+    imod = imod_xmit;
+    ichip = sp_xmit_sub;
+    buf_send[0]=(imod <<11)+ (ichip << 8) + sp_xmit_lastmod + (positionOfModule<<16) ;
+    i= 1;
+    k= 1;
+    i = pcie_send_1(hDev, i, k, px);
+    usleep(10);
+  }
+  
   for(j = 0; j < numberOfLoop; j++){//Number of loops
     for(int ia = 0; ia < numberOfEvent; ++ia){//numberOfEvent loop
    
@@ -1524,7 +2332,7 @@ int sphenixADCTest(char* inConfigFileName)
 	usleep(10);
 	py = &read_array;
 	i = pcie_rec_2(hDev,0,2,nword,0,py);     // read out 2 32 bits words
-      }      
+      }
 
       if(usePulse != 0)	buf_send[0]= (0x2<<8) + sp_cntrl_timing + ((sp_cntrl_pulse)<<16);
       else if(usePulseGen){//Now on 4244
@@ -1614,8 +2422,73 @@ int sphenixADCTest(char* inConfigFileName)
 
       //Skipping a big iselDCM section here just to get the code up from L4380-L4573
       //when you add the isel_dcm section, uncomment the else below
-      //else{
-      {
+      
+      //CFM DCM EDIT 2021.08.02
+      if(useDCM){
+	nread = 3;
+	i = pcie_rec(hDev,0,1,nread,0,py);     // read out 2 32 bits words
+	ichip =5;
+	iadd = (imod_dcm<<11)+ (ichip<<8);
+	buf_send[0]=(imod_dcm <<11)+ (ichip << 8) + dcm2_5_readdata + ((nread-2)<< 16);  /* number word to read- (header+trailer)*/
+	buf_send[1]=0x5555aaaa;// -1 for the counter                                     
+	
+	ik = pcie_send(hDev, 1, 1, px);  //** for dcm2 status read send 2 words **//
+	usleep(100);
+	i = pcie_rec(hDev,0,2,nread,0,py);
+	//
+	iread = read_array[2] & 0xffff;
+	nread = iread+1;
+	kword = (nread/2);
+	if(nread%2 !=0) kword = kword+1;
+	
+	i = pcie_rec(hDev,0,1,nread,0,py);     // read out 2 32 bits words
+	buf_send[0]=(imod_dcm <<11)+ (ichip << 8) + dcm2_5_readdata + ((nread-2)<< 16);  /* number word to read- (header+trailer)*/
+	buf_send[1]=0x5555aaaa;  // -1 for the counter
+	ik = pcie_send(hDev, 1, 1, px);  //** for dcm2 status read send 2 words **//
+	usleep(100);
+	i = pcie_rec(hDev,0,2,nread,0,py);
+
+	for (i=0; i<(nread-1); i++) {
+	  u32Data = (read_array[i] & 0xffff0000) + (read_array[i+1] &0xffff);
+	  read_array1[i] = u32Data;
+	  if(writeToFile != 1) {
+	    if(i%8 == 0) printf("%3d",i);
+	    printf(" %9x",u32Data);
+	    if(i%8 == 7) printf("\n");
+	  }
+	}
+	if(writeToFile == 1) {
+	  fprintf(outFile,"%d\n", nread);
+	  for (i=0; i<(nread-1); i++) {
+	    //        u32Data = (idcm_read_array[2*i+1]<<16)+idcm_read_array[2*i+2];
+	    fprintf(outFile," %9x",read_array1[i]);
+	    if((i%8) == 7) fprintf(outFile,"\n");
+	  }
+	  fprintf(outFile,"\n");
+	  //        if((i%8) != 7) fprintf(outFile,"\n");
+	}
+	//       fprintf(outFile,"\n");
+
+	for (ic=0; ic< numberFEM; ic++ ){
+	  ioffset = (64*nsample+4+2)*ic;              // 4 words header + 2 word parity
+	  iparity =0;
+
+	  for(int is=0; is<4+(nsample*64); is++) {
+	    if(is%2 == 0) u32Data = (read_array1[is+6+ioffset] & 0xffff) <<16;
+	    else {
+	      u32Data = u32Data + (read_array1[is+6+ioffset] & 0xffff);
+	      //         u32Data = u32Data+ ((read_array1[is+6] & 0xffff) <<16);
+	      iparity = iparity ^ u32Data;
+	    }
+	  }
+	  ioffset_t = ioffset + (64*nsample+4)+6;   // 4 words header + 5 event header -1 for array started at 0
+	  i= ((read_array1[ioffset_t] & 0xffff) <<16) +(read_array1[ioffset_t+1] & 0xffff);
+	  if(i != iparity) {
+	    printf(" event = %d, module %d Partity error....... = %x %x\n", ia, (positionOfModule+ic), i, iparity);
+	  }
+	}      
+      }
+      else{      
 	ichip = sp_adc_readback_sub ;   // controller data go to ADC input section
 	for (ik =0; ik<numberFEM; ik++) {
 	  imod = ik + positionOfModule;
@@ -1706,8 +2579,16 @@ int sphenixADCTest(char* inConfigFileName)
 	    }
 
 	  }//L4695
+
+
 	}	  
-      }      
+      }    
+
+      if(TRUE) {
+	if((ia%10) == 0) printf(" write event = %d \n", ia);
+      }
+
+  
     }
 
     if(writeToFile) fclose(outFile);
