@@ -5,11 +5,10 @@ endif
 
 WD_BASEDIR:=$(wildcard $(WD_BASEDIR))
 
-ifeq ($(wildcard $(WD_BASEDIR)/include/windrvr.h),)
-        $(error Please edit the makefile and set the WD_BASEDIR variable \
-        to point to the location of your WinDriver installation directory)
-endif
-
+#ifeq ($(wildcard $(WD_BASEDIR)/include/windrvr.h),)
+#        $(error Please edit the makefile and set the WD_BASEDIR variable \
+#        to point to the location of your WinDriver installation directory)
+#endif
 
 
 # Comment/uncomment to enable/disable debugging code
@@ -52,6 +51,10 @@ endif
 
 MKDIR_BIN=mkdir -p $(PWD)/bin
 MKDIR_LIB=mkdir -p $(PWD)/lib
+MKDIR_OBJ=mkdir -p $(PWD)/obj
+
+INCLUDE=-I$(PWD)
+LIB=-L$(PWD)/lib
 
 CFLAGS += -DLINUX $(DEBFLAGS) -Wall -I$(PWD) -I$(WD_BASEDIR)/include -I$(WD_BASEDIR) 
 CFLAGS += -DWD_DRIVER_NAME_CHANGE
@@ -66,11 +69,15 @@ LD = gcc
 OD = ./
 OBJS = $(addsuffix .o, $(addprefix $(OD)/, $(basename $(notdir $(SRCS)))))
 
+ROOT=`root-config --cflags --glibs`
 
-all : mkdirBin mkdirLib $(TARGET)
+all : mkdirBin mkdirObj mkdirLib obj/checkMakeDir.o obj/globalDebugHandler.o lib/libSPHENIXADCHelper.so bin/sphenixTokenPassing.exe $(TARGET) 
 
 mkdirBin:
 	$(MKDIR_BIN)
+
+mkdirObj:
+	$(MKDIR_OBJ)
 
 mkdirLib:
 	$(MKDIR_LIB)
@@ -89,6 +96,18 @@ diag_lib.o : $(WD_BASEDIR)/samples/shared/diag_lib.c
 
 wdc_diag_lib.o : $(WD_BASEDIR)/samples/shared/wdc_diag_lib.c
 	$(CC) -std=c99 -c $(CFLAGS) -o $@ $<
+
+obj/checkMakeDir.o: src/checkMakeDir.C
+	$(CXX) $(CXXFLAGS) -fPIC -c src/checkMakeDir.C -o obj/checkMakeDir.o $(INCLUDE)
+
+obj/globalDebugHandler.o: src/globalDebugHandler.C
+	$(CXX) $(CXXFLAGS) -fPIC -c src/globalDebugHandler.C -o obj/globalDebugHandler.o $(ROOT) $(INCLUDE)
+
+lib/libSPHENIXADCHelper.so:
+	$(CXX) $(CXXFLAGS) -fPIC -shared -o lib/libSPHENIXADCHelper.so obj/checkMakeDir.o obj/globalDebugHandler.o $(ROOT) $(INCLUDE)
+
+bin/sphenixTokenPassing.exe: src/sphenixTokenPassing.C
+	$(CXX) $(CXXFLAGS) src/sphenixTokenPassing.C -o bin/sphenixTokenPassing.exe $(ROOT) $(INCLUDE) $(LIB) -lSPHENIXADCHelper
 
 
 clean:
