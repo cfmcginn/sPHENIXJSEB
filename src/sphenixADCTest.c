@@ -1893,6 +1893,14 @@ int sphenixADCTest(char* inConfigFileName)
     return 1;
   }
 
+
+  //Go ahead and make it so that this won't run if useXMIT and useDCM dont match
+  //Both should be true if doing ADC
+  if(useXMIT != useDCM){
+    printf("useXMIT value \'%d\' does not match useDCM value \'%d\'. return 1\n", useXMIT, useDCM);
+    return 1;
+  }
+
   //Now do the strings
   char* boardID = allParamVals[boardIDPos];
   char* additionalTag = allParamVals[additionalTagPos];
@@ -1993,7 +2001,7 @@ int sphenixADCTest(char* inConfigFileName)
   printf("Will the same JSEB2 control DCM2?");
   int answer1 = -1;
   while(answer1 < 0){
-    scanf("%d", &answer1);
+    scanf("%d", answer1);
     
     if(answer1 != 1 && answer1 != 0){
       printf(" Please answer1 1/0\n");
@@ -2010,7 +2018,6 @@ int sphenixADCTest(char* inConfigFileName)
     printf("Select second device (DCM2 crate controller JSEB): \n");
     if(JSEB2_DEFAULT_VENDOR_ID) hDev2 = DeviceFindAndOpen(JSEB2_DEFAULT_VENDOR_ID, JSEB2_DEFAULT_DEVICE_ID);
   }
-
   if(doDebug) printf("DEBUG FILE, LINE: '%s', L%d\n", __FILE__, __LINE__);
 
 
@@ -2030,7 +2037,8 @@ int sphenixADCTest(char* inConfigFileName)
   static UINT32 i,j,k,ifr,nread;
 
   //Temp hard coded
-  static int idac_shaper, idac_shaper_load, ic, nword, ik, iparity, imod_dcm, iadd, ioffset_t;  
+  const int nsample = 28;
+  static int idac_shaper, idac_shaper_load, ic, ipattern, nword, ik, iparity, imod_dcm, iadd, ioffset_t;  
   static int adc_data[64][40];
 
   if(doDebug) printf("DEBUG FILE, LINE: '%s', L%d\n", __FILE__, __LINE__);
